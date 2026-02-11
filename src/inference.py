@@ -135,7 +135,7 @@ def ad3sc_inference(
     Run AD3-SC inference on a single question.
     Returns: {predicted, correct, samples_used, total_tokens, stopped_early, abstained, ...}
     """
-    inf_cfg = cfg.inference
+    inf_cfg = cfg.run.inference
     k_max = inf_cfg.k_max
     modes = inf_cfg.reasoning_modes
     alpha = inf_cfg.alpha
@@ -265,7 +265,7 @@ def standard_sc_inference(
     Run Standard Self-Consistency with fixed K.
     Returns: {predicted, correct, samples_used, total_tokens, ...}
     """
-    inf_cfg = cfg.inference
+    inf_cfg = cfg.run.inference
     k_fixed = inf_cfg.k_fixed
     
     answers = []
@@ -333,7 +333,7 @@ def run_inference(cfg: DictConfig):
     
     # Load dataset
     dataset = load_dataset(cfg)
-    exemplars = FEW_SHOT_EXEMPLARS[:cfg.inference.num_exemplars]
+    exemplars = FEW_SHOT_EXEMPLARS[:cfg.run.inference.num_exemplars]
     
     # Determine method
     method = cfg.run.method

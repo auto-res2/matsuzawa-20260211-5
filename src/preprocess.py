@@ -120,8 +120,8 @@ def load_dataset(cfg: DictConfig) -> List[Dict[str, str]]:
         List of examples with 'question' and 'answer' fields
     """
     dataset_name = cfg.run.dataset
-    split = cfg.dataset_params.split
-    max_samples = cfg.dataset_params.get("max_samples", None)
+    split = cfg.run.dataset_params.split
+    max_samples = cfg.run.dataset_params.get("max_samples", None)
     
     print(f"Loading dataset: {dataset_name} (split: {split})")
     

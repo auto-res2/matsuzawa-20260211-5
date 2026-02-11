@@ -30,9 +30,9 @@ def main(cfg: DictConfig):
         # Override for sanity check: limit dataset size and disable wandb
         OmegaConf.set_struct(cfg, False)
         cfg.wandb.mode = "disabled"
-        cfg.dataset_params.max_samples = 10  # Process only 10 samples
+        cfg.run.dataset_params.max_samples = 10  # Process only 10 samples
         OmegaConf.set_struct(cfg, True)
-        print(f"Sanity check mode: Processing max {cfg.dataset_params.max_samples} samples")
+        print(f"Sanity check mode: Processing max {cfg.run.dataset_params.max_samples} samples")
     
     # Determine task type and invoke appropriate script
     task = cfg.run.task
