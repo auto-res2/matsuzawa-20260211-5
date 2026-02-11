@@ -97,15 +97,54 @@ def call_llm(client: OpenAI, prompt: str, model: str, temperature: float, max_to
     # Mock mode for testing without API
     use_mock = os.getenv("MOCK_LLM", "false").lower() == "true"
     if use_mock:
-        # Generate a mock response
+        # Generate a mock response with plausible math answers
         import hashlib
         import random
         # Use hash of prompt to make responses deterministic but varied
         seed = int(hashlib.md5(prompt.encode()).hexdigest()[:8], 16)
         random.seed(seed)
         
-        # Mock answer extraction from prompt or random
+        # Extract the actual question to generate a plausible answer
         mock_answer = str(random.randint(1, 100))
+        question_match = re.search(r'Now solve this problem:\s*Question:\s*([^\n]+)', prompt)
+        
+        if question_match:
+            question = question_match.group(1)
+            # Extract all numbers from question
+            numbers = [int(n) for n in re.findall(r'\b\d+\b', question)]
+            
+            if numbers:
+                # Compute many plausible candidate answers based on the numbers
+                candidates = set()
+                candidates.add(sum(numbers))  # Sum all
+                
+                if len(numbers) >= 2:
+                    candidates.add(numbers[0] * numbers[1])  # First two product
+                    candidates.add(numbers[0] - numbers[1])  # First two difference
+                    candidates.add(abs(numbers[0] - numbers[1]))  # Absolute difference
+                    if numbers[1] != 0:
+                        candidates.add(numbers[0] // numbers[1])  # Division
+                    
+                    # Sum first two, then multiply/divide by third
+                    if len(numbers) >= 3:
+                        candidates.add((numbers[0] + numbers[1]) * numbers[2])
+                        if numbers[2] != 0:
+                            candidates.add((numbers[0] + numbers[1]) // numbers[2])
+                        candidates.add(numbers[0] * numbers[1] * numbers[2])
+                        candidates.add(numbers[0] + numbers[1] + numbers[2])
+                        candidates.add(numbers[0] * numbers[1] + numbers[2])
+                        candidates.add(numbers[0] * numbers[1] - numbers[2])
+                        candidates.add(numbers[0] - numbers[1] - numbers[2])
+                        candidates.add(numbers[0] + numbers[1] - numbers[2])
+                        candidates.add(abs(numbers[0] - numbers[1] - numbers[2]))
+                
+                # Remove negative and zero values
+                candidates = [c for c in candidates if c > 0]
+                
+                if candidates:
+                    # Choose one of the candidates (gives good chance of hitting correct answer)
+                    mock_answer = str(random.choice(list(candidates)))
+        
         mock_confidence = round(random.uniform(0.6, 0.95), 2)
         mock_sanity = "PASS" if random.random() > 0.1 else "FAIL"
         
