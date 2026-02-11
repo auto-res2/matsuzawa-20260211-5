@@ -1,0 +1,45 @@
+# Proposed method: AD3-SC (Adaptive Disagreement-Calibrated Self-Consistency with Diverse Reasoning Modes)
+# Dataset: GSM8K (grade-school math word problems)
+
+run_id: proposed-gsm8k
+method: ad3sc
+dataset: gsm8k
+
+# Task type
+task: inference
+
+# Inference parameters
+inference:
+  model_name: gpt-3.5-turbo  # OpenAI API model
+  temperature: 0.7
+  max_tokens: 512
+  
+  # AD3-SC specific parameters
+  k_max: 10  # Maximum number of samples
+  reasoning_modes:
+    - Algebra
+    - Backsolve
+    - Estimation
+    - Units-Consistency
+  
+  # Evidence weighting parameters
+  alpha: 1.5  # Confidence exponent
+  beta: 0.001  # Length penalty coefficient
+  epsilon: 0.01  # Confidence clipping bounds
+  
+  # Stopping criteria
+  tau: 0.7  # Minimum top answer probability to stop
+  delta: 0.3  # Minimum gap between top two answers
+  
+  # Responsible AI: verification fallback
+  use_verification: true
+  verification_threshold: 0.15  # Gap below which to trigger verification
+  
+  # Few-shot exemplars count
+  num_exemplars: 3
+
+# Dataset parameters
+dataset_params:
+  split: test
+  max_samples: null  # Use full test set in main mode, overridden in sanity_check
+  cache_dir: .cache

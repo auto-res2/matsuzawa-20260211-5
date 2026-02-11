@@ -1,0 +1,27 @@
+# Comparative method: Standard Self-Consistency with fixed K=10
+# Dataset: GSM8K (grade-school math word problems)
+
+run_id: comparative-0-gsm8k
+method: standard_sc
+dataset: gsm8k
+
+# Task type
+task: inference
+
+# Inference parameters
+inference:
+  model_name: gpt-3.5-turbo  # OpenAI API model
+  temperature: 0.7
+  max_tokens: 512
+  
+  # Standard SC parameters
+  k_fixed: 10  # Fixed number of samples
+  
+  # Few-shot exemplars count (same as proposed for fair comparison)
+  num_exemplars: 3
+
+# Dataset parameters
+dataset_params:
+  split: test
+  max_samples: null  # Use full test set in main mode, overridden in sanity_check
+  cache_dir: .cache
