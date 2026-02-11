@@ -760,5 +760,93 @@
     "experimental_code": "import re, math\nfrom collections import defaultdict\n\nANS_RE  = re.compile(r\"Answer\\s*:\\s*([-+]?\\d+(?:\\.\\d+)?)\", re.I)\nCONF_RE = re.compile(r\"Confidence\\s*:\\s*(0(?:\\.\\d+)?|1(?:\\.0+)?)\", re.I)\nPASS_RE = re.compile(r\"Sanity\\s*:\\s*.*\\b(PASS|FAIL)\\b\", re.I)\n\nMODES = [\n    \"Algebra\",\n    \"Backsolve\",\n    \"Estimation\",\n    \"Units/Consistency\",\n]\n\ndef parse_fields(text):\n    ans_m = ANS_RE.search(text)\n    conf_m = CONF_RE.search(text)\n    pass_m = PASS_RE.search(text)\n    ans = ans_m.group(1) if ans_m else None\n    conf = float(conf_m.group(1)) if conf_m else 0.0\n    conf = max(0.0, min(1.0, conf))\n    sanity_pass = (pass_m is not None and pass_m.group(1).upper() == \"PASS\")\n    length = max(1, len(text.split()))\n    return ans, conf, sanity_pass, length\n\ndef weight(conf, sanity_pass, length, alpha=1.0, beta=0.0, eps=1e-3):\n    if not sanity_pass:\n        return 0.0\n    c = min(1.0 - eps, max(eps, conf))\n    return (c ** alpha) * math.exp(-beta * length)\n\ndef posterior_from_scores(scores):\n    total = sum(scores.values())\n    if total <= 0:\n        return {}\n    return {a: s / total for a, s in scores.items()}\n\ndef top2(posterior):\n    items = sorted(posterior.items(), key=lambda kv: kv[1], reverse=True)\n    if not items:\n        return (None, 0.0), (None, 0.0)\n    top1 = items[0]\n    top2 = items[1] if len(items) > 1 else (None, 0.0)\n    return top1, top2\n\ndef ad3_sc(prompt, generate_fn, k_max=10, tau=0.75, delta=0.25,\n           alpha=1.0, beta=0.0, temperature=0.7):\n    \"\"\"Sequential, disagreement-aware self-consistency with diversity modes.\n\n    generate_fn(full_prompt, temperature=...) -> generated_text\n    Returns: (pred_answer, used_k, samples)\n    \"\"\"\n    scores = defaultdict(float)\n    samples = []\n\n    for i in range(k_max):\n        mode = MODES[i % len(MODES)]\n        mode_instr = (\n            f\"\\n\\nMode: {mode}\\n\"\n            \"Solve using this mode. End with:\\n\"\n            \"Answer: <final>\\n\"\n            \"Confidence: <0-1>\\n\"\n            \"Sanity: <one-line check> PASS/FAIL\\n\"\n        )\n        text = generate_fn(prompt + mode_instr, temperature=temperature)\n        samples.append(text)\n\n        ans, conf, sanity_pass, length = parse_fields(text)\n        if ans is not None:\n            scores[ans] += weight(conf, sanity_pass, length, alpha=alpha, beta=beta)\n\n        post = posterior_from_scores(scores)\n        (a1, p1), (a2, p2) = top2(post)\n        if a1 is not None and p1 >= tau and (p1 - p2) >= delta:\n            return a1, i + 1, samples\n\n    # no early stop: return best available\n    post = posterior_from_scores(scores)\n    (a1, _), _ = top2(post)\n    return a1, k_max, samples\n\n# --- Baseline aggregators ---\n\ndef majority_vote(samples):\n    counts = defaultdict(int)\n    for t in samples:\n        ans, _, _, _ = parse_fields(t)\n        if ans is not None:\n            counts[ans] += 1\n    return max(counts.items(), key=lambda kv: kv[1])[0] if counts else None\n\ndef cw_sc(samples, alpha=1.0, beta=0.0):\n    scores = defaultdict(float)\n    for t in samples:\n        ans, conf, sanity_pass, length = parse_fields(t)\n        if ans is None:\n            continue\n        # CW-SC typically doesn't gate on PASS; keep it optional by treating FAIL as low weight.\n        w = (max(conf, 0.0) ** alpha) * math.exp(-beta * length)\n        scores[ans] += w\n    return max(scores.items(), key=lambda kv: kv[1])[0] if scores else None\n",
     "expected_result": "On 200-example subsets (per dataset) with `K_max=10` and the same exemplars:\n- GSM8K accuracy (2–3B instruction model, few-shot CoT):\n  - A) single-sample CoT: ~30–35%\n  - B) SC (K=10): ~35–38%\n  - C) CW-SC (K=10): ~38–40%\n  - D) AD3-SC (K_max=10): ~40–43% (≈ +2–4% over SC, +1–3% over CW-SC)\n  - E) AD3-SC without diversity: ~39–41% (showing ~1–2% from diversity control)\n\n- SVAMP shows similar but slightly lower absolute numbers; expected uplift from AD3-SC over SC: +2–5%.\n\nEfficiency: AD3-SC should early-stop on many easy items, using ~5–7 samples on average (30–50% fewer generations than fixed K=10) while matching or exceeding fixed-budget accuracy. Disagreement diagnostics: the largest gains occur in the high-disagreement regime (small top1-top2 gap), where diversity + stopping reduces premature commitment to a frequent wrong answer.\n\nLower is better for secondary ECE; modest calibration improvements are expected when using PASS-gated confidence (e.g., ECE drop ~0.02–0.05 vs CW-SC), but primary claim is accuracy + compute efficiency.",
     "expected_conclusion": "AD3-SC makes a prompt-only CoT pipeline more human-like in a way that is both academically and socially meaningful: it operationalizes ‘try different approaches, accumulate evidence, and stop only when sufficiently certain’ as a sequential, disagreement-calibrated aggregation rule. This goes beyond incremental reweighting of self-consistency by introducing (i) controlled reasoning diversity, (ii) an explicit uncertainty-aware stopping criterion, and (iii) an optional responsible fallback when uncertainty persists—without training verifiers or finetuning.\n\nPractically, AD3-SC targets two deployment-critical needs simultaneously: higher reasoning accuracy *and* lower average inference cost (early stopping), while reducing overconfident failures by refusing to treat low-margin majorities as reliable. The hypothesis is easily testable with a short Python script using open models and standard datasets, aligning with the prompt-only constraint."
+  },
+  "experimental_design": {
+    "experiment_summary": "Task: solve grade-school math word problems by generating a final numeric answer from a natural-language question using prompt-only Chain-of-Thought (CoT) sampling.\n\nPurpose: empirically test whether the proposed inference-time method AD3-SC (Adaptive Disagreement‑Calibrated Self‑Consistency with Diverse Reasoning Modes) achieves (i) higher answer accuracy and (ii) lower average compute than standard fixed-budget self-consistency (SC), by (a) forcing diversity across reasoning modes, (b) weighting samples using structured self-reported confidence plus a sanity PASS/FAIL check, and (c) stopping early when agreement is strong and abstaining/triggering a lightweight verification when disagreement remains high.\n\nWorkflow (per example):\n1) Build a few-shot CoT prompt (2–4 exemplars) + the target question.\n2) Generate CoT samples sequentially up to K_max=10. Each sample is requested under a rotating reasoning Mode tag (Algebra / Backsolve / Estimation / Units-Consistency) and must end with structured fields: `Answer:`, `Confidence: [0,1]`, `Sanity: ... PASS/FAIL`.\n3) Maintain per-answer evidence scores S(a) by summing weights w_i = clip(conf)^alpha * 1[PASS] * exp(-beta*len_i).\n4) After each sample, compute pseudo-posterior p(a)=S(a)/sum_b S(b). Stop early and output argmax_a p(a) if (p_top >= tau) and (p_top - p_2nd >= delta). Otherwise continue until K_max.\n5) Optional responsible fallback: if still ambiguous at K_max (gap < delta or p_top < tau), issue a single verification-only prompt for the current top candidate; if verification returns NOT OK with high confidence, abstain (or downweight and choose next).\n\nBaselines and controls:\n- Comparison method: standard fixed-K self-consistency (SC) with K=10 samples and unweighted majority vote, using the same few-shot exemplars and same decoding temperature.\n- To isolate compute efficiency, both methods share the same maximum budget K_max=10; AD3-SC may stop earlier.\n\nExperiment scale and fit to Runner resources:\n- Use exactly 200 examples from GSM8K test split (openai/gsm8k, config=main) to bound runtime.\n- Use a single open instruction model small enough for a single H200 (140GB) with bf16, and run inference-only (no finetuning).\n- Generation is capped per sample (e.g., max_new_tokens=256–512) and K_max=10, so worst-case generations per example are 10 (SC) vs <=10 (AD3-SC), with expected early-stopping reducing average generations.\n- Optional Optuna tuning (20 trials) is run on a small held-out slice (e.g., first 50 examples from the same split or from validation) to keep cost low and to avoid overfitting; the final report evaluates on the fixed 200-example test subset.",
+    "runner_config": {
+      "runner_label": [
+        "self-hosted",
+        "gpu-runner"
+      ],
+      "description": "NVIDIA H200, VRAM: 140 GB, RAM: 240 GB"
+    },
+    "evaluation_metrics": [
+      {
+        "name": "accuracy",
+        "description": "Correctness criteria: A prediction is correct if the extracted final numeric answer matches the GSM8K ground-truth answer after numeric normalization.\n- Extract predicted number from the model output using a regex over the required structured field `Answer:`; if absent, mark incorrect.\n- Normalize by: stripping commas/spaces, converting to float if possible; for integers, compare integer values; otherwise compare floats with tolerance (recommended: |pred - gold| <= 1e-3 * max(1, |gold|)).\n- If GSM8K gold answer is given as a string with units/text, parse the last number in the gold answer (standard GSM8K evaluation practice).\n\nCalculation method: accuracy = (#correct / N), where N is the number of evaluated examples.\n\nTask appropriateness: GSM8K is a numeric word-problem benchmark; correctness is inherently based on the final numeric value rather than surface-form text.\n\nRelevant visualizations:\n- Bar chart of accuracy by method (SC vs AD3-SC).\n- Accuracy vs. max budget curve (compute accuracy at k=1..10 by truncating the first k samples; for AD3-SC, show realized stopping)."
+      },
+      {
+        "name": "avg_samples_used",
+        "description": "Correctness criteria: Not a correctness metric; measures efficiency/compute.\n\nCalculation method: avg_samples_used = (1/N) * sum_i k_i, where k_i is the number of CoT samples generated for example i.\n- For SC, k_i is fixed at K=10.\n- For AD3-SC, k_i is the stopping step when the disagreement-aware rule fires, else K_max.\n\nTask appropriateness: The hypothesis claims compute is wasted on easy questions under fixed-K SC; this metric directly quantifies expected generation savings.\n\nRelevant visualizations:\n- Histogram / KDE of k_i for AD3-SC.\n- Scatter plot of k_i vs. correctness (did early stopping correlate with accuracy?)."
+      },
+      {
+        "name": "ece",
+        "description": "Correctness criteria: Calibration quality—how well the method’s reported/derived confidence aligns with empirical accuracy.\n\nDefinition of confidence:\n- For AD3-SC, use the pseudo-posterior top probability p_top at decision time as the system confidence.\n- For SC, use the majority fraction of the winning answer among K samples as a comparable confidence proxy.\n\nCalculation method (Expected Calibration Error, ECE):\n1) Partition predictions into M bins by confidence (e.g., M=10 equal-width bins over [0,1]).\n2) For each bin m, compute: acc(m) = mean(1[correct]) and conf(m) = mean(confidence) over items in that bin.\n3) ECE = sum_{m=1..M} (|B_m|/N) * |acc(m) - conf(m)|.\n\nTask appropriateness: The method introduces explicit uncertainty handling (stopping/abstaining) and confidence-weighted evidence accumulation; calibration is necessary for responsible deployment.\n\nRelevant visualizations:\n- Reliability diagram (accuracy vs. confidence by bin) with the diagonal y=x.\n- Confidence histogram to show bin occupancy."
+      },
+      {
+        "name": "abstention_rate",
+        "description": "Correctness criteria: Only applicable if the optional responsible fallback is enabled.\n\nCalculation method: abstention_rate = (#abstained / N).\n- An abstention occurs when AD3-SC reaches K_max without meeting stopping criteria and verification rejects the top candidate (or confidence remains below a threshold), and the system outputs a special token (e.g., `ABSTAIN`).\n\nTask appropriateness: The hypothesis explicitly targets a prompt-only stop/abstain mechanism tied to uncertainty.\n\nRelevant visualizations:\n- Bar chart of abstention rate.\n- Accuracy vs. coverage curve (selective prediction): coverage = 1 - abstention_rate; plot selective accuracy on non-abstained items versus coverage by sweeping the abstention threshold."
+      },
+      {
+        "name": "high_disagreement_accuracy",
+        "description": "Correctness criteria: Same as accuracy, but computed on the subset of ‘hard/ambiguous’ questions characterized by disagreement.\n\nDisagreement definition:\n- For SC: disagreement if majority fraction < 0.6.\n- For AD3-SC: disagreement if, at K_max (or at decision time), p_top - p_2nd < 0.2 or p_top < 0.7.\n\nCalculation method: high_disagreement_accuracy = (#correct on disagreement subset / |subset|).\n\nTask appropriateness: The main claim is that disagreement-aware stopping and diversity help specifically when the answer distribution is multi-modal and majority is brittle.\n\nRelevant visualizations:\n- Two-bar comparison (overall accuracy vs disagreement-subset accuracy).\n- Boxplot of (p_top - p_2nd) for correct vs incorrect predictions."
+      }
+    ],
+    "models_to_use": [
+      "Qwen3-8B (8B params)"
+    ],
+    "datasets_to_use": [
+      "gsm8k"
+    ],
+    "proposed_method": {
+      "method_name": "AD3-SC (Adaptive Disagreement-Calibrated Self-Consistency with Diverse Reasoning Modes)",
+      "description": "Inference-only prompt pipeline that turns self-consistency into a sequential decision process: (1) forces diverse reasoning modes across samples to reduce correlated errors, (2) collects structured self-reports (Answer/Confidence/Sanity PASS/FAIL), (3) accumulates PASS-gated confidence-weighted evidence into a pseudo-posterior over answers, and (4) applies a disagreement-aware early-stopping rule (p_top >= tau and margin >= delta), with an optional verification-only fallback or abstention when uncertainty persists. Novelty vs classic SC is adaptive compute + explicit disagreement modeling and responsible stopping, without any finetuning/verifier training.",
+      "optuna_config": {
+        "enabled": true,
+        "n_trials": 20,
+        "search_spaces": [
+          {
+            "param_name": "tau",
+            "distribution_type": "uniform",
+            "low": 0.6,
+            "high": 0.9
+          },
+          {
+            "param_name": "delta",
+            "distribution_type": "uniform",
+            "low": 0.05,
+            "high": 0.4
+          },
+          {
+            "param_name": "alpha",
+            "distribution_type": "uniform",
+            "low": 0.5,
+            "high": 3.0
+          },
+          {
+            "param_name": "beta",
+            "distribution_type": "uniform",
+            "low": 0.0,
+            "high": 0.01
+          },
+          {
+            "param_name": "temperature",
+            "distribution_type": "uniform",
+            "low": 0.4,
+            "high": 0.9
+          }
+        ]
+      }
+    },
+    "comparative_methods": [
+      {
+        "method_name": "Fixed-K Self-Consistency (SC, majority vote)",
+        "description": "Classic self-consistency baseline: sample K independent CoT completions at a fixed budget K=10 with temperature sampling, parse each completion’s final answer, and output the unweighted majority vote. No adaptive stopping, no explicit diversity control, and no uncertainty-triggered abstention/verification.",
+        "optuna_config": {
+          "enabled": false,
+          "n_trials": 20
+        }
+      }
+    ]
   }
 }
