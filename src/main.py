@@ -26,6 +26,13 @@ def main(cfg: DictConfig):
     print("="*60)
     
     # Apply mode-specific overrides
+    import os
+    
+    # Enable mock LLM mode if OPENAI_API_KEY is not set (for all modes)
+    if not os.getenv("OPENAI_API_KEY"):
+        os.environ["MOCK_LLM"] = "true"
+        print("OPENAI_API_KEY not set, enabling MOCK_LLM mode")
+    
     if cfg.mode == "sanity_check":
         # Override for sanity check: limit dataset size and disable wandb
         OmegaConf.set_struct(cfg, False)
@@ -33,12 +40,6 @@ def main(cfg: DictConfig):
         cfg.run.dataset_params.max_samples = 10  # Process only 10 samples
         OmegaConf.set_struct(cfg, True)
         print(f"Sanity check mode: Processing max {cfg.run.dataset_params.max_samples} samples")
-        
-        # Enable mock LLM mode if OPENAI_API_KEY is not set
-        import os
-        if not os.getenv("OPENAI_API_KEY"):
-            os.environ["MOCK_LLM"] = "true"
-            print("OPENAI_API_KEY not set, enabling MOCK_LLM mode for sanity check")
     
     # Determine task type and invoke appropriate script
     task = cfg.run.task
